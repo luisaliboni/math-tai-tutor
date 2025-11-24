@@ -1,14 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import LatexRenderer from './LatexRenderer';
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  created_at: string;
-}
+import LatexRenderer from '@/components/common/LatexRenderer';
+import { Message } from '@/types';
 
 interface ChatInterfaceProps {
   userId: string;

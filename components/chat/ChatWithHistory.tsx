@@ -1,15 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import LatexRenderer from './LatexRenderer';
+import LatexRenderer from '@/components/common/LatexRenderer';
 import ConversationSidebar from './ConversationSidebar';
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  created_at: string;
-}
+import { Message, UploadedFileInfo } from '@/types';
+import { MAX_TITLE_LENGTH, DEFAULT_CONVERSATION_TITLE, ACCEPTED_FILE_TYPES } from '@/utils/constants';
 
 interface ChatWithHistoryProps {
   userId: string;
@@ -21,9 +16,10 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadedFileInfo, setUploadedFileInfo] = useState<{name: string; id: string} | null>(null);
+  const [uploadedFileInfo, setUploadedFileInfo] = useState<UploadedFileInfo | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -67,15 +63,49 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
     }
   };
 
-  const handleNewConversation = () => {
-    setCurrentConversationId(null);
-    setMessages([]);
-    setInput('');
+  const handleNewConversation = async () => {
+    try {
+      // Create a new conversation immediately
+      const response = await fetch('/api/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: userId,
+          title: DEFAULT_CONVERSATION_TITLE
+        })
+      });
+
+      const data = await response.json();
+      if (data.conversation) {
+        // Set the new conversation as current
+        setCurrentConversationId(data.conversation.id);
+        setMessages([]);
+        setInput('');
+      } else {
+        console.error('Failed to create conversation');
+        // Fallback: just clear the current conversation
+        setCurrentConversationId(null);
+        setMessages([]);
+        setInput('');
+      }
+    } catch (error) {
+      console.error('Error creating new conversation:', error);
+      // Fallback: just clear the current conversation
+      setCurrentConversationId(null);
+      setMessages([]);
+      setInput('');
+    }
   };
 
   const handleSelectConversation = (conversationId: string) => {
     console.log('[ChatWithHistory] Conversation selected:', conversationId);
-    setCurrentConversationId(conversationId);
+    // If empty string, clear the selection
+    if (conversationId === '') {
+      setCurrentConversationId(null);
+      setMessages([]);
+    } else {
+      setCurrentConversationId(conversationId);
+    }
   };
 
   const handleFileUpload = () => {
@@ -117,6 +147,32 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
     }
   };
 
+  const stopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setIsLoading(false);
+      
+      // Update the last assistant message to show it was stopped
+      setMessages(prev => {
+        const updated = [...prev];
+        // Find the last assistant message
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].role === 'assistant') {
+            if (updated[i].content && !updated[i].content.includes('[Response stopped by user]')) {
+              updated[i] = {
+                ...updated[i],
+                content: updated[i].content + '\n\n[Response stopped by user]'
+              };
+            }
+            break;
+          }
+        }
+        return updated;
+      });
+    }
+  };
+
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -128,6 +184,9 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
     setUploadedFileInfo(null);
     setSelectedFile(null);
     setIsLoading(true);
+
+    // Create a new AbortController for this request
+    abortControllerRef.current = new AbortController();
 
     // Prepare the display message (include file info if present)
     let displayMessage = userMessage;
@@ -154,13 +213,14 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
       let conversationId = currentConversationId;
 
       // If no conversation exists, create one with the first message as title
+      // (This is a fallback - normally conversation is created when "New Chat" is clicked)
       if (!conversationId) {
         const createResponse = await fetch('/api/conversations', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             userId: userId,
-            title: userMessage.length > 60 ? userMessage.substring(0, 60) + '...' : userMessage
+            title: userMessage.length > MAX_TITLE_LENGTH ? userMessage.substring(0, MAX_TITLE_LENGTH) + '...' : userMessage
           })
         });
 
@@ -170,6 +230,29 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
           setCurrentConversationId(conversationId);
         } else {
           throw new Error('Failed to create conversation');
+        }
+      } else {
+        // Update the conversation title with the first message if it's still "New Conversation"
+        // This happens when user clicks "New Chat" and then sends their first message
+        try {
+          const conversationsResponse = await fetch(`/api/conversations?userId=${userId}`);
+          const conversationsData = await conversationsResponse.json();
+          const currentConversation = conversationsData.conversations?.find((c: any) => c.id === conversationId);
+          
+          if (currentConversation && currentConversation.title === DEFAULT_CONVERSATION_TITLE) {
+            // Update the title with the actual message
+            await fetch('/api/conversations', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                conversationId: conversationId,
+                title: userMessage.length > MAX_TITLE_LENGTH ? userMessage.substring(0, MAX_TITLE_LENGTH) + '...' : userMessage
+              })
+            });
+          }
+        } catch (error) {
+          // If title update fails, continue anyway - it's not critical
+          console.error('Failed to update conversation title:', error);
         }
       }
 
@@ -194,7 +277,8 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
           userId: userId,
           conversationId: conversationId,
           fileIds: fileInfo ? [fileInfo.id] : undefined
-        })
+        }),
+        signal: abortControllerRef.current.signal
       });
 
       if (!response.ok) {
@@ -211,52 +295,67 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
 
       let accumulatedContent = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
 
-        if (done) break;
+          if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
 
-              if (data.type === 'text') {
-                accumulatedContent += data.content;
-                // Update the assistant message with accumulated content
-                setMessages(prev =>
-                  prev.map(msg =>
-                    msg.id === assistantMessageId
-                      ? { ...msg, content: accumulatedContent }
-                      : msg
-                  )
-                );
-              } else if (data.type === 'done') {
-                // Final message - ensure it's set
-                setMessages(prev =>
-                  prev.map(msg =>
-                    msg.id === assistantMessageId
-                      ? { ...msg, content: data.message }
-                      : msg
-                  )
-                );
-              } else if (data.type === 'error') {
-                throw new Error(data.message);
+                if (data.type === 'text') {
+                  accumulatedContent += data.content;
+                  // Update the assistant message with accumulated content
+                  setMessages(prev =>
+                    prev.map(msg =>
+                      msg.id === assistantMessageId
+                        ? { ...msg, content: accumulatedContent }
+                        : msg
+                    )
+                  );
+                } else if (data.type === 'done') {
+                  // Final message - ensure it's set
+                  setMessages(prev =>
+                    prev.map(msg =>
+                      msg.id === assistantMessageId
+                        ? { ...msg, content: data.message }
+                        : msg
+                    )
+                  );
+                } else if (data.type === 'error') {
+                  throw new Error(data.message);
+                }
+              } catch (parseError) {
+                console.error('Error parsing SSE data:', parseError);
               }
-            } catch (parseError) {
-              console.error('Error parsing SSE data:', parseError);
             }
           }
         }
+      } catch (readError: any) {
+        // Check if the error is due to abort
+        if (readError.name === 'AbortError' || abortControllerRef.current?.signal.aborted) {
+          console.log('Stream reading aborted by user');
+          // Don't show error message if user intentionally stopped
+          return;
+        }
+        throw readError;
       }
 
-    } catch (error) {
+    } catch (error: any) {
+      // Check if the error is due to abort
+      if (error.name === 'AbortError' || abortControllerRef.current?.signal.aborted) {
+        console.log('Request aborted by user');
+        return;
+      }
+      
       console.error('Error sending message:', error);
       // Update the assistant message with error (if it was created)
-      const assistantMessageId = (Date.now() + 1).toString();
       setMessages(prev =>
         prev.map(msg =>
           msg.role === 'assistant' && msg.content === ''
@@ -266,11 +365,12 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
       );
     } finally {
       setIsLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
   return (
-    <div className="flex h-screen bg-white">
+    <div className="flex h-full w-full bg-white overflow-hidden">
       {/* Sidebar with conversation history */}
       <ConversationSidebar
         userId={userId}
@@ -280,7 +380,7 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
       />
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
         <div className="bg-white border-b-4 border-mathtai-tan p-4 shadow-md flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -299,7 +399,7 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
         </div>
 
         {/* Messages Container */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
           {messages.length === 0 && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-gray-500">
@@ -324,14 +424,14 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
                 className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  className={`max-w-[80%] rounded-lg p-4 ${
+                  className={`max-w-[80%] rounded-lg p-4 overflow-hidden ${
                     message.role === 'user'
                       ? 'bg-mathtai-chalkboard text-white'
                       : 'bg-mathtai-tan/20 border-2 border-mathtai-tan text-gray-900'
                   }`}
                 >
                   {message.role === 'user' ? (
-                    <p className="whitespace-pre-wrap">{message.content}</p>
+                    <p className="whitespace-pre-wrap break-words">{message.content}</p>
                   ) : (
                     <LatexRenderer content={message.content} />
                   )}
@@ -383,7 +483,7 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
               type="file"
               className="hidden"
               onChange={handleFileChange}
-              accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+              accept={ACCEPTED_FILE_TYPES}
             />
             <button
               type="button"
@@ -401,14 +501,29 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask anything about MATH 1228..."
               className="flex-1 border-2 border-mathtai-tan rounded-lg px-4 py-3 focus:outline-none focus:border-mathtai-green focus:ring-2 focus:ring-mathtai-green/20 text-gray-900"
+              disabled={isLoading}
             />
-            <button
-              type="submit"
-              disabled={isLoading || !input.trim()}
-              className="bg-mathtai-chalkboard text-white px-6 py-3 rounded-lg hover:bg-mathtai-green focus:outline-none focus:ring-2 focus:ring-mathtai-green focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition font-medium"
-            >
-              Send
-            </button>
+            {isLoading ? (
+              <button
+                type="button"
+                onClick={stopGeneration}
+                className="bg-mathtai-red text-white px-6 py-3 rounded-lg hover:bg-mathtai-red/90 focus:outline-none focus:ring-2 focus:ring-mathtai-red focus:ring-offset-2 transition font-medium flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                </svg>
+                Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                className="bg-mathtai-chalkboard text-white px-6 py-3 rounded-lg hover:bg-mathtai-green focus:outline-none focus:ring-2 focus:ring-mathtai-green focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition font-medium"
+              >
+                Send
+              </button>
+            )}
           </form>
         </div>
       </div>

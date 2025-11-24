@@ -1,12 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-
-interface Conversation {
-  id: string;
-  title: string;
-  updated_at: string;
-}
+import { Conversation } from '@/types';
+import { formatDate } from '@/utils/date';
 
 interface ConversationSidebarProps {
   userId: string;
@@ -49,38 +45,42 @@ export default function ConversationSidebar({
 
   const handleDelete = async (conversationId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
+    
     if (confirm('Delete this conversation?')) {
       try {
-        await fetch(`/api/conversations?conversationId=${conversationId}`, {
+        console.log('[ConversationSidebar] Deleting conversation:', conversationId);
+        const response = await fetch(`/api/conversations?conversationId=${conversationId}`, {
           method: 'DELETE'
         });
 
-        // If we're deleting the current conversation, start a new one
-        if (currentConversationId === conversationId) {
-          onNewConversation();
+        if (!response.ok) {
+          const errorData = await response.json();
+          console.error('[ConversationSidebar] Delete failed:', errorData);
+          throw new Error(errorData.error || 'Failed to delete conversation');
         }
 
-        loadConversations();
+        console.log('[ConversationSidebar] Delete successful, reloading conversations');
+        
+        // If we're deleting the current conversation, clear it first
+        const wasCurrentConversation = currentConversationId === conversationId;
+        
+        // Reload conversations to update the list
+        await loadConversations();
+
+        // If we deleted the current conversation, clear the selection
+        // Don't auto-create a new one - let them click "New Chat" if they want
+        if (wasCurrentConversation) {
+          // Clear the current conversation selection by passing empty string
+          onSelectConversation('');
+        }
       } catch (error) {
-        console.error('Failed to delete conversation:', error);
+        console.error('[ConversationSidebar] Failed to delete conversation:', error);
+        alert('Failed to delete conversation. Please try again.');
       }
     }
   };
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
-  };
 
   if (isCollapsed) {
     return (
@@ -108,7 +108,7 @@ export default function ConversationSidebar({
   }
 
   return (
-    <div className="w-64 bg-mathtai-beige border-r-4 border-mathtai-tan flex flex-col h-screen">
+    <div className="w-64 bg-mathtai-beige border-r-4 border-mathtai-tan flex flex-col h-full">
       {/* Header with New Chat Button */}
       <div className="p-3 border-b-2 border-mathtai-tan">
         <button
@@ -150,8 +150,9 @@ export default function ConversationSidebar({
                 </div>
                 <button
                   onClick={(e) => handleDelete(conversation.id, e)}
-                  className="opacity-0 group-hover:opacity-100 p-1 hover:bg-mathtai-red/20 rounded transition flex-shrink-0"
+                  className="opacity-0 group-hover:opacity-100 p-1 hover:bg-mathtai-red/20 rounded transition flex-shrink-0 z-10"
                   title="Delete conversation"
+                  type="button"
                 >
                   <svg className="w-4 h-4 text-mathtai-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />

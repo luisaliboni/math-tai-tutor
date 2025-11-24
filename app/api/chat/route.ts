@@ -2,7 +2,9 @@ import { NextRequest } from 'next/server';
 import { createWorkflowStream } from '@/agents/workflow';
 import { createWorkflowStreamWithFiles } from '@/agents/workflow-stream';
 import { adaptAgentStream } from '@/lib/stream-adapter';
+import { FileInfo } from '@/types';
 import { supabaseServer } from '@/lib/supabase-server';
+import OpenAI from 'openai';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,6 +44,8 @@ export async function POST(req: NextRequest) {
     const encoder = new TextEncoder();
     let fullMessage = '';
     let finalOutput: any = null;
+    let files: FileInfo[] | undefined = undefined;
+    let containerId: string | undefined = undefined;
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -76,17 +80,117 @@ export async function POST(req: NextRequest) {
             } else if (chunk.type === 'done') {
               finalOutput = chunk.output;
               fullMessage = chunk.message;
+              files = chunk.files;
+              containerId = chunk.containerId;
               console.log('[API] Stream done, final message:', fullMessage);
-              // Send done event
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ type: 'done', message: fullMessage })}\n\n`)
-              );
+              console.log('[API] Files detected:', files ? files.length : 0);
+              console.log('[API] Container ID:', containerId);
+              // NOTE: Don't send done event yet - process files first
             } else if (chunk.type === 'error') {
               throw new Error(chunk.message);
             }
           }
 
           console.log('[API] Finished streaming');
+
+          // Process files if any were generated
+          if (files && files.length > 0) {
+            if (!containerId) {
+              console.error('[API] ❌ Files detected but no containerId! Cannot download files.');
+              console.error('[API] This means the OpenAI response structure may have changed.');
+              console.error('[API] Files will appear as error messages to the user.');
+            } else {
+              console.log('[API] ⚙️ Starting file processing for', files.length, 'file(s)');
+
+            // Initialize OpenAI client to list container files
+            const openai = new OpenAI({
+              apiKey: process.env.OPENAI_API_KEY
+            });
+
+            try {
+              // List all files in the container
+              const containerFiles = await openai.containers.files.list(containerId);
+
+              console.log('[API] Container files:', containerFiles.data.length);
+
+              // Process each file reference
+              for (const fileRef of files) {
+                console.log('[API] 🔍 Looking for file:', fileRef.fileName, 'at path:', fileRef.path);
+
+                // Find matching file by path/filename
+                const containerFile = containerFiles.data.find(
+                  (f: any) => f.path === fileRef.path || f.name === fileRef.fileName
+                );
+
+                if (containerFile) {
+                  console.log('[API] ✅ Found container file:', (containerFile as any).id, (containerFile as any).name);
+
+                  // Call the download API to fetch and store the file
+                  const downloadResponse = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/api/files/download`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      fileId: (containerFile as any).id,
+                      containerId: containerId,
+                      fileName: (containerFile as any).name,
+                      userId: userId,
+                      conversationId: conversationId
+                    })
+                  });
+
+                  if (downloadResponse.ok) {
+                    const downloadResult = await downloadResponse.json();
+                    console.log('[API] ✅ File downloaded and uploaded to Supabase:', downloadResult.url);
+
+                    // Replace sandbox:// URL with real Supabase URL in the message
+                    // Try both single and double slash formats
+                    const sandboxUrlDouble = `sandbox://${fileRef.path}`;
+                    const sandboxUrlSingle = `sandbox:/${fileRef.path}`;
+
+                    const messageBefore = fullMessage;
+                    fullMessage = fullMessage.replace(sandboxUrlDouble, downloadResult.url);
+
+                    if (fullMessage === messageBefore) {
+                      // Try single slash format
+                      fullMessage = fullMessage.replace(sandboxUrlSingle, downloadResult.url);
+                    }
+
+                    if (fullMessage === messageBefore) {
+                      console.error('[API] ❌ URL replacement FAILED! Could not find sandbox URL in message');
+                      console.error('[API] Tried:', sandboxUrlDouble, 'and', sandboxUrlSingle);
+                      console.error('[API] Message excerpt:', messageBefore.substring(0, 500));
+                    } else {
+                      console.log('[API] ✅ URL replaced successfully');
+                      console.log('[API] Before:', sandboxUrlDouble);
+                      console.log('[API] After:', downloadResult.url);
+                    }
+                  } else {
+                    const errorText = await downloadResponse.text();
+                    console.error('[API] ❌ Failed to download file:', (containerFile as any).id);
+                    console.error('[API] Error:', errorText);
+                  }
+                } else {
+                  console.warn('[API] ⚠️ Could not find container file for:', fileRef.fileName);
+                  console.warn('[API] Available files:', containerFiles.data.map((f: any) => f.name || f.path));
+                }
+              }
+
+              console.log('[API] ✅ Files processed successfully');
+              console.log('[API] 📝 Final message length:', fullMessage.length);
+            } catch (fileError) {
+              console.error('[API] ❌ Error processing files:', fileError);
+              // Continue with saving the message even if file processing fails
+            }
+            }
+          }
+
+          // NOW send the done event with the processed message (URLs replaced)
+          console.log('[API] 📤 Sending done event to client with processed message');
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ type: 'done', message: fullMessage })}\n\n`)
+          );
 
           // Save agent response to database
           console.log('[CHAT API] Saving assistant message to database');

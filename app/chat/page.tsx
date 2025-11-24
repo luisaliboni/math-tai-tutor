@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import ChatWithHistory from '@/components/ChatWithHistory';
+import ChatWithHistory from '@/components/chat/ChatWithHistory';
 
 export default function ChatPage() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -63,14 +63,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="relative h-screen">
-      {/* Logout button */}
-      <button
-        onClick={handleLogout}
-        className="absolute top-4 right-4 z-50 bg-white text-gray-700 px-4 py-2 rounded-md shadow-md hover:bg-gray-100 transition"
-      >
-        Logout
-      </button>
+    <div className="h-screen w-screen overflow-hidden">
       <ChatWithHistory userId={userId} />
     </div>
   );

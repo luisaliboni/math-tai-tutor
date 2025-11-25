@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import OpenAI from 'openai';
 import { supabaseServer } from '@/lib/supabase-server';
+import { getContentType } from '@/utils/attachments';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -50,11 +51,12 @@ export async function POST(req: NextRequest) {
 
     // Upload to Supabase Storage
     const storagePath = `${userId}/${conversationId}/${fileName}`;
+    const contentType = getContentType(fileName);
 
     const { data: uploadData, error: uploadError } = await supabaseServer.storage
       .from('agent-files')
       .upload(storagePath, buffer, {
-        contentType: 'application/octet-stream',
+        contentType: contentType,
         upsert: true // Allow re-uploading the same file
       });
 

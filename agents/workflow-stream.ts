@@ -29,7 +29,7 @@ export async function createWorkflowStreamWithFiles(workflow: WorkflowStreamInpu
   const runner = new Runner({
     traceMetadata: {
       __trace_source__: "agent-builder",
-      workflow_id: "wf_68efcbd1f3188190bd4fd7e9153470d104693f24615e2a25"
+      workflow_id: "wf_6925de9fb40c81908958e9185cdf8c6a00c338ec80f21f2f"
     }
   });
 

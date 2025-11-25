@@ -38,8 +38,14 @@ export interface FileInfo {
   fileName: string;
 }
 
+export interface Attachment {
+  name: string;
+  url: string;
+  contentType?: string;
+  isImage: boolean;
+}
+
 export type StreamEvent =
   | { type: 'text'; content: string }
   | { type: 'done'; message: string; output?: any; files?: FileInfo[]; containerId?: string }
   | { type: 'error'; message: string };
-

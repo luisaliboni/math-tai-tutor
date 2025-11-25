@@ -3,11 +3,40 @@ import { createWorkflowStream } from '@/agents/workflow';
 import { createWorkflowStreamWithFiles } from '@/agents/workflow-stream';
 import { adaptAgentStream } from '@/lib/stream-adapter';
 import { FileInfo } from '@/types';
+import { formatAttachmentMarkdown, isImageFile } from '@/utils/attachments';
 import { supabaseServer } from '@/lib/supabase-server';
 import OpenAI from 'openai';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+const AGENT_FILES_BUCKET = 'agent-files';
+let bucketInitialized = false;
+async function ensureBucketExists() {
+  if (bucketInitialized) {
+    return;
+  }
+
+  try {
+    const { data, error } = await supabaseServer.storage.getBucket(AGENT_FILES_BUCKET);
+    if (error || !data) {
+      console.warn('[API] agent-files bucket missing, creating it now');
+      const { error: createError } = await supabaseServer.storage.createBucket(AGENT_FILES_BUCKET, {
+        public: true,
+        fileSizeLimit: 50 * 1024 * 1024, // 50MB limit
+      });
+      if (createError) {
+        console.error('[API] ❌ Failed to create agent-files bucket:', createError);
+        throw new Error(`Unable to create storage bucket: ${createError.message}`);
+      }
+    }
+
+    bucketInitialized = true;
+  } catch (bucketError) {
+    console.error('[API] ❌ ensureBucketExists error:', bucketError);
+    throw bucketError;
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -95,12 +124,16 @@ export async function POST(req: NextRequest) {
 
           // Process files if any were generated
           if (files && files.length > 0) {
-            if (!containerId) {
-              console.error('[API] ❌ Files detected but no containerId! Cannot download files.');
-              console.error('[API] This means the OpenAI response structure may have changed.');
-              console.error('[API] Files will appear as error messages to the user.');
+            // Validate container ID - must start with 'cntr_'
+            if (!containerId || !containerId.startsWith('cntr_')) {
+              console.error('[API] ❌ Files detected but no valid containerId!');
+              console.error('[API] Container ID:', containerId);
+              console.error('[API] Container ID must start with "cntr_" but got:', containerId?.substring(0, 4));
+              console.error('[API] Files will be shown as sandbox links (not downloadable).');
+              // Don't process files, but continue - the sandbox links will be shown
             } else {
               console.log('[API] ⚙️ Starting file processing for', files.length, 'file(s)');
+              console.log('[API] Using container ID:', containerId);
 
             // Initialize OpenAI client to list container files
             const openai = new OpenAI({
@@ -117,59 +150,145 @@ export async function POST(req: NextRequest) {
               for (const fileRef of files) {
                 console.log('[API] 🔍 Looking for file:', fileRef.fileName, 'at path:', fileRef.path);
 
-                // Find matching file by path/filename
+                // Normalize paths for comparison (handle both with and without leading slash)
+                const normalizedRefPath = fileRef.path.startsWith('/') ? fileRef.path : '/' + fileRef.path;
+                const normalizedRefPathNoSlash = fileRef.path.startsWith('/') ? fileRef.path.substring(1) : fileRef.path;
+
+                // Find matching file by path/filename (try multiple path formats)
                 const containerFile = containerFiles.data.find(
-                  (f: any) => f.path === fileRef.path || f.name === fileRef.fileName
+                  (f: any) => {
+                    const filePath = f.path || '';
+                    const fileName = f.name || '';
+                    
+                    console.log('[API] 🔍 Comparing:', {
+                      filePath,
+                      fileName,
+                      refPath: fileRef.path,
+                      refFileName: fileRef.fileName,
+                      normalizedRefPath,
+                      normalizedRefPathNoSlash
+                    });
+                    
+                    // Try exact match, normalized match, and filename match
+                    return filePath === fileRef.path || 
+                           filePath === normalizedRefPath ||
+                           filePath === normalizedRefPathNoSlash ||
+                           fileName === fileRef.fileName ||
+                           filePath.endsWith('/' + fileRef.fileName) ||
+                           filePath.endsWith(fileRef.fileName);
+                  }
                 );
 
                 if (containerFile) {
                   console.log('[API] ✅ Found container file:', (containerFile as any).id, (containerFile as any).name);
 
-                  // Call the download API to fetch and store the file
-                  const downloadResponse = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/api/files/download`, {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                      fileId: (containerFile as any).id,
-                      containerId: containerId,
-                      fileName: (containerFile as any).name,
-                      userId: userId,
-                      conversationId: conversationId
-                    })
-                  });
+                  try {
+                    // Download file directly (no HTTP fetch needed)
+                    const fileId = (containerFile as any).id;
+                    const fileName = (containerFile as any).name || fileRef.fileName;
+                    
+                    console.log('[API] Downloading file from OpenAI', { fileId, containerId, fileName });
 
-                  if (downloadResponse.ok) {
-                    const downloadResult = await downloadResponse.json();
-                    console.log('[API] ✅ File downloaded and uploaded to Supabase:', downloadResult.url);
+                    // Download file content from OpenAI container
+                    const fileContent = await openai.containers.files.content.retrieve(
+                      fileId,
+                      { container_id: containerId }
+                    );
+
+                    // Convert response to buffer
+                    const arrayBuffer = await fileContent.arrayBuffer();
+                    const buffer = Buffer.from(arrayBuffer);
+
+                    console.log('[API] File downloaded from OpenAI', { fileId, size: buffer.length });
+
+                    // Upload to Supabase Storage (ensure bucket exists first)
+                    await ensureBucketExists();
+
+                    const { getContentType } = await import('@/utils/attachments');
+                    const storagePath = `${userId}/${conversationId || 'no-convo'}/${fileName}`;
+                    const contentType = getContentType(fileName);
+
+                    const { data: uploadData, error: uploadError } = await supabaseServer.storage
+                      .from(AGENT_FILES_BUCKET)
+                      .upload(storagePath, buffer, {
+                        contentType: contentType,
+                        upsert: true
+                      });
+
+                    if (uploadError) {
+                      console.error('[API] Error uploading to Supabase:', uploadError);
+                      throw new Error(`Failed to upload file to storage: ${uploadError.message}`);
+                    }
+
+                    console.log('[API] File uploaded to Supabase', { path: uploadData.path });
+
+                    // Generate public URL
+                    const serveUrl = `/api/files/serve?path=${encodeURIComponent(
+                      uploadData.path
+                    )}&filename=${encodeURIComponent(fileName)}`;
+
+                    console.log('[API] ✅ File downloaded and uploaded to Supabase:', serveUrl);
+
+                    const downloadResult = { url: serveUrl, path: uploadData.path, fileName };
 
                     // Replace sandbox:// URL with real Supabase URL in the message
-                    // Try both single and double slash formats
+                    // Try multiple formats: sandbox://path, sandbox:/path, and in markdown links
                     const sandboxUrlDouble = `sandbox://${fileRef.path}`;
                     const sandboxUrlSingle = `sandbox:/${fileRef.path}`;
+                    const sandboxUrlInLink = `[${fileRef.fileName}](sandbox:/${fileRef.path})`;
+                    const sandboxUrlInLinkDouble = `[${fileRef.fileName}](sandbox://${fileRef.path})`;
 
-                    const messageBefore = fullMessage;
-                    fullMessage = fullMessage.replace(sandboxUrlDouble, downloadResult.url);
+                    // Also try filename-only patterns which sometimes appear
+                    const sandboxUrlFilenameOnly = `(sandbox:/mnt/data/${fileRef.fileName})`;
+                    const sandboxUrlFilenameOnlyDouble = `(sandbox://mnt/data/${fileRef.fileName})`;
 
+                    let messageBefore = fullMessage;
+                    let fallbackAppended = false;
+
+                    // Try replacing the full markdown link first (most common case)
+                    fullMessage = fullMessage.replace(sandboxUrlInLink, `[${fileRef.fileName}](${downloadResult.url})`);
                     if (fullMessage === messageBefore) {
-                      // Try single slash format
+                      fullMessage = fullMessage.replace(sandboxUrlInLinkDouble, `[${fileRef.fileName}](${downloadResult.url})`);
+                    }
+                    
+                    // Try matching just the URL part in parentheses (common in markdown links)
+                    if (fullMessage === messageBefore) {
+                       fullMessage = fullMessage.replace(sandboxUrlFilenameOnly, `(${downloadResult.url})`);
+                    }
+                    if (fullMessage === messageBefore) {
+                       fullMessage = fullMessage.replace(sandboxUrlFilenameOnlyDouble, `(${downloadResult.url})`);
+                    }
+                    
+                    // Then try replacing just the URL part
+                    if (fullMessage === messageBefore) {
                       fullMessage = fullMessage.replace(sandboxUrlSingle, downloadResult.url);
                     }
-
                     if (fullMessage === messageBefore) {
-                      console.error('[API] ❌ URL replacement FAILED! Could not find sandbox URL in message');
-                      console.error('[API] Tried:', sandboxUrlDouble, 'and', sandboxUrlSingle);
-                      console.error('[API] Message excerpt:', messageBefore.substring(0, 500));
+                      fullMessage = fullMessage.replace(sandboxUrlDouble, downloadResult.url);
+                    }
+
+                    // If no replacement happened (maybe no link in text), append it
+                    if (fullMessage === messageBefore) {
+                      console.log('[API] No link found in text, appending attachment markdown');
+                      fullMessage += formatAttachmentMarkdown(fileRef.fileName, downloadResult.url);
+                      fallbackAppended = true;
                     } else {
                       console.log('[API] ✅ URL replaced successfully');
-                      console.log('[API] Before:', sandboxUrlDouble);
-                      console.log('[API] After:', downloadResult.url);
+                      console.log('[API] Message before:', messageBefore.substring(0, 200));
+                      console.log('[API] Message after:', fullMessage.substring(0, 200));
                     }
-                  } else {
-                    const errorText = await downloadResponse.text();
+
+                    // Ensure image previews are visible even if link text already existed
+                    if (isImageFile(fileRef.fileName) && !fallbackAppended) {
+                      const previewMarkdown = formatAttachmentMarkdown(fileRef.fileName, downloadResult.url);
+                      if (!fullMessage.includes(previewMarkdown.trim())) {
+                        fullMessage += previewMarkdown;
+                      }
+                    }
+                  } catch (downloadError) {
                     console.error('[API] ❌ Failed to download file:', (containerFile as any).id);
-                    console.error('[API] Error:', errorText);
+                    console.error('[API] Error:', downloadError);
+                    // Continue - the sandbox URL will remain in the message
                   }
                 } else {
                   console.warn('[API] ⚠️ Could not find container file for:', fileRef.fileName);

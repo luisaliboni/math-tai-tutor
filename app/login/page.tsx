@@ -42,7 +42,7 @@ export default function LoginPage() {
           <div className="mb-4 flex justify-center">
             <img src="/mathtai-logo.png" alt="Math TAi" className="h-24 w-auto" />
           </div>
-          <h1 className="text-3xl font-bold text-mathtai-chalkboard mb-2">Welcome to Math TAi</h1>
+          <h1 className="text-3xl font-bold text-mathtai-chalkboard mb-2">MATH TAI</h1>
           <p className="text-gray-600">Your AI Teaching Assistant for MATH1228</p>
         </div>
 

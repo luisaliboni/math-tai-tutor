@@ -100,8 +100,179 @@ export async function* adaptAgentStream(
     console.log('[Adapter] 🔍 DEBUG - containerId from streamedResult:', containerId);
     console.log('[Adapter] 🔍 DEBUG - fullMessage contains "sandbox":', fullMessage.includes('sandbox'));
 
-    // Use whichever container_id we can find
-    const actualContainerId = containerId || stateContainerId || currentTurnContainerId;
+    // Extract container ID from tool calls in newItems
+    let toolCallContainerId: string | undefined = undefined;
+    if (newItems && Array.isArray(newItems)) {
+      for (const item of newItems) {
+        // Check if this is a tool call item
+        if (item.type === 'tool_call_item' || item.rawItem?.type === 'tool_call') {
+          const rawItem = item.rawItem || item;
+          console.log('[Adapter] 🔍 Examining tool call item:', JSON.stringify(rawItem, null, 2).substring(0, 500));
+          
+          // For code interpreter, check providerData but only if it's a container ID (starts with cntr_)
+          // The ci_ ID is a call ID, not a container ID
+          if (rawItem.providerData?.type === 'code_interpreter_call') {
+            // Check if there's a container_id field in providerData
+            if (rawItem.providerData.container_id && rawItem.providerData.container_id.startsWith('cntr_')) {
+              toolCallContainerId = rawItem.providerData.container_id;
+              console.log('[Adapter] ✅ Found container_id in providerData.container_id:', toolCallContainerId);
+              break;
+            }
+            // Check if there's a container field
+            if (rawItem.providerData.container && typeof rawItem.providerData.container === 'string' && rawItem.providerData.container.startsWith('cntr_')) {
+              toolCallContainerId = rawItem.providerData.container;
+              console.log('[Adapter] ✅ Found container in providerData.container:', toolCallContainerId);
+              break;
+            }
+            // The providerData.id is a call ID (ci_), not a container ID - skip it
+            console.log('[Adapter] ⚠️ providerData.id is a call ID (ci_), not a container ID. Looking elsewhere...');
+          }
+          
+          // Code interpreter tool calls have container_id in the tool_call object
+          if (rawItem.tool_call?.container_id) {
+            toolCallContainerId = rawItem.tool_call.container_id;
+            console.log('[Adapter] ✅ Found container_id in tool_call:', toolCallContainerId);
+            break;
+          }
+          // Also check in the tool_call_id or container fields
+          if (rawItem.container_id) {
+            toolCallContainerId = rawItem.container_id;
+            console.log('[Adapter] ✅ Found container_id in rawItem:', toolCallContainerId);
+            break;
+          }
+          // Check in the tool call response
+          if (rawItem.tool_call_id && rawItem.container) {
+            toolCallContainerId = rawItem.container;
+            console.log('[Adapter] ✅ Found container_id in container field:', toolCallContainerId);
+            break;
+          }
+          // Check nested in tool_call object
+          if (rawItem.tool_call?.id) {
+            // For code interpreter, the container might be in the tool call itself
+            const toolCallId = rawItem.tool_call.id;
+            console.log('[Adapter] 🔍 Found tool_call.id:', toolCallId);
+          }
+        }
+      }
+    }
+
+    // Also try to get container ID from state's generated items
+    const state = (streamedResult as any).state;
+    if (state?._generatedItems && Array.isArray(state._generatedItems)) {
+      console.log('[Adapter] 🔍 Checking _generatedItems for container_id, count:', state._generatedItems.length);
+      for (const genItem of state._generatedItems) {
+        // Check if it's a tool call item
+        if (genItem.type === 'tool_call_item' || genItem.rawItem?.type === 'tool_call') {
+          const rawItem = genItem.rawItem || genItem;
+          console.log('[Adapter] 🔍 Examining generated tool call item keys:', Object.keys(rawItem));
+          // Log the full structure to find container ID
+          try {
+            const fullStructure = JSON.stringify(rawItem, (key, value) => {
+              // Limit depth to avoid circular references
+              if (key === 'agent' || key === 'rawItem') return '[Object]';
+              return value;
+            }, 2);
+            console.log('[Adapter] 🔍 Full generated item structure (first 2000 chars):', fullStructure.substring(0, 2000));
+          } catch (e) {
+            console.log('[Adapter] ⚠️ Could not stringify item structure');
+          }
+          
+          // Check output for container ID (code interpreter output might have container info)
+          if (rawItem.output) {
+            console.log('[Adapter] 🔍 Checking output for container_id');
+            if (rawItem.output.container_id && rawItem.output.container_id.startsWith('cntr_')) {
+              toolCallContainerId = rawItem.output.container_id;
+              console.log('[Adapter] ✅ Found container_id in output:', toolCallContainerId);
+              break;
+            }
+            if (rawItem.output.container && typeof rawItem.output.container === 'string' && rawItem.output.container.startsWith('cntr_')) {
+              toolCallContainerId = rawItem.output.container;
+              console.log('[Adapter] ✅ Found container in output:', toolCallContainerId);
+              break;
+            }
+          }
+          
+          // For code interpreter, check if providerData.id starts with cntr_ (it might be the container ID)
+          // But first check if there's a container field in providerData
+          if (rawItem.providerData) {
+            if (rawItem.providerData.container_id && rawItem.providerData.container_id.startsWith('cntr_')) {
+              toolCallContainerId = rawItem.providerData.container_id;
+              console.log('[Adapter] ✅ Found container_id in providerData.container_id:', toolCallContainerId);
+              break;
+            }
+            if (rawItem.providerData.container && typeof rawItem.providerData.container === 'string' && rawItem.providerData.container.startsWith('cntr_')) {
+              toolCallContainerId = rawItem.providerData.container;
+              console.log('[Adapter] ✅ Found container in providerData.container:', toolCallContainerId);
+              break;
+            }
+            // The ci_ ID is NOT the container ID, but we might need to use it to get the container
+            // For now, skip it and look elsewhere
+          }
+          
+          // Try various paths to find container_id
+          if (rawItem.tool_call?.container_id && rawItem.tool_call.container_id.startsWith('cntr_')) {
+            toolCallContainerId = rawItem.tool_call.container_id;
+            console.log('[Adapter] ✅ Found container_id in generated item tool_call:', toolCallContainerId);
+            break;
+          }
+          if (rawItem.container_id && rawItem.container_id.startsWith('cntr_')) {
+            toolCallContainerId = rawItem.container_id;
+            console.log('[Adapter] ✅ Found container_id in generated item:', toolCallContainerId);
+            break;
+          }
+          // Check if there's a container reference
+          if (rawItem.container) {
+            const containerId = typeof rawItem.container === 'string' ? rawItem.container : rawItem.container.id;
+            if (containerId && containerId.startsWith('cntr_')) {
+              toolCallContainerId = containerId;
+              console.log('[Adapter] ✅ Found container in generated item:', toolCallContainerId);
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // Also check state's last processed response
+    if (state?._lastProcessedResponse) {
+      const lastResponse = state._lastProcessedResponse;
+      // Check if there are tool calls with container info
+      if (lastResponse.toolsUsed && lastResponse.toolsUsed.includes('code_interpreter_call')) {
+        // Try to find container in the state's context or trace
+        if (state._context?.container_id) {
+          toolCallContainerId = state._context.container_id;
+          console.log('[Adapter] ✅ Found container_id in state._context:', toolCallContainerId);
+        }
+      }
+    }
+    
+    // Check model responses for container IDs
+    if (state?._modelResponses && Array.isArray(state._modelResponses)) {
+      console.log('[Adapter] 🔍 Checking _modelResponses for container_id, count:', state._modelResponses.length);
+      for (const modelResponse of state._modelResponses) {
+        if (modelResponse.output && Array.isArray(modelResponse.output)) {
+          for (const outputItem of modelResponse.output) {
+            // Check if this output item is a tool call with container
+            if (outputItem.type === 'tool_call' || outputItem.tool_call_id) {
+              if (outputItem.container_id) {
+                toolCallContainerId = outputItem.container_id;
+                console.log('[Adapter] ✅ Found container_id in model response output:', toolCallContainerId);
+                break;
+              }
+              if (outputItem.tool_call?.container_id) {
+                toolCallContainerId = outputItem.tool_call.container_id;
+                console.log('[Adapter] ✅ Found container_id in model response tool_call:', toolCallContainerId);
+                break;
+              }
+            }
+          }
+        }
+        if (toolCallContainerId) break;
+      }
+    }
+
+    // Use whichever container_id we can find (calculate before processing files)
+    let actualContainerId = containerId || stateContainerId || currentTurnContainerId || toolCallContainerId;
 
     // Extract file information from newItems (tool call outputs)
     const files: FileInfo[] = [];
@@ -110,6 +281,55 @@ export async function* adaptAgentStream(
       console.log('[Adapter] 🔍 Checking for files in', newItems.length, 'items');
 
       for (const item of newItems) {
+        // First, check if this is a tool call item and try to extract container ID from it
+        if (item.type === 'tool_call_item' || item.rawItem?.type === 'tool_call') {
+          const rawItem = item.rawItem || item;
+          // Check for container ID in various places in the tool call item
+          
+          // For code interpreter, check providerData but only accept container IDs (cntr_)
+          if (rawItem.providerData?.type === 'code_interpreter_call') {
+            if (rawItem.providerData.container_id && rawItem.providerData.container_id.startsWith('cntr_')) {
+              if (!toolCallContainerId) {
+                toolCallContainerId = rawItem.providerData.container_id;
+                console.log('[Adapter] ✅ Found container_id in tool call providerData.container_id:', toolCallContainerId);
+              }
+            }
+            if (rawItem.providerData.container && typeof rawItem.providerData.container === 'string' && rawItem.providerData.container.startsWith('cntr_')) {
+              if (!toolCallContainerId) {
+                toolCallContainerId = rawItem.providerData.container;
+                console.log('[Adapter] ✅ Found container in tool call providerData.container:', toolCallContainerId);
+              }
+            }
+          }
+          
+          if (rawItem.response?.container_id) {
+            if (!toolCallContainerId) {
+              toolCallContainerId = rawItem.response.container_id;
+              console.log('[Adapter] ✅ Found container_id in tool call response:', toolCallContainerId);
+            }
+          }
+          if (rawItem.output?.container_id) {
+            if (!toolCallContainerId) {
+              toolCallContainerId = rawItem.output.container_id;
+              console.log('[Adapter] ✅ Found container_id in tool call output:', toolCallContainerId);
+            }
+          }
+          // Check function call response
+          if (rawItem.function?.container_id) {
+            if (!toolCallContainerId) {
+              toolCallContainerId = rawItem.function.container_id;
+              console.log('[Adapter] ✅ Found container_id in tool call function:', toolCallContainerId);
+            }
+          }
+          // Check if there's a function_call with container
+          if (rawItem.function_call?.container_id) {
+            if (!toolCallContainerId) {
+              toolCallContainerId = rawItem.function_call.container_id;
+              console.log('[Adapter] ✅ Found container_id in function_call:', toolCallContainerId);
+            }
+          }
+        }
+        
         // Check if this is a code interpreter tool call with file outputs
         if (item.rawItem?.type === 'message' && item.rawItem?.content) {
           console.log('[Adapter] Examining message item with', item.rawItem.content.length, 'content blocks');
@@ -154,8 +374,27 @@ export async function* adaptAgentStream(
                 });
               }
 
-              if (matchCount === 0 && textToSearch.includes('sandbox:')) {
-                console.warn('[Adapter] ⚠️ Found "sandbox:" in text but regex did not match');
+              // Fallback: detect plain sandbox:// URLs (without markdown link)
+              const plainSandboxRegex = /sandbox:\/\/?([^\s\)\]]+)/g;
+              let plainMatch;
+              while ((plainMatch = plainSandboxRegex.exec(textToSearch)) !== null) {
+                const filePath = plainMatch[1];
+                const fileName = filePath.split('/').pop() || 'download.txt';
+
+                // Avoid duplicates if we already captured this path via the markdown regex
+                if (!files.some(f => f.path === filePath)) {
+                  console.log('[Adapter] ✅ Found plain sandbox URL:', { fileName, filePath });
+                  files.push({
+                    id: '',
+                    path: filePath,
+                    containerId: actualContainerId || '',
+                    fileName
+                  });
+                }
+              }
+
+              if (matchCount === 0 && files.length === 0 && textToSearch.includes('sandbox:')) {
+                console.warn('[Adapter] ⚠️ Found "sandbox:" in text but regex did not capture any paths');
                 console.warn('[Adapter] Text sample:', textToSearch.substring(0, 200));
               }
             }
@@ -164,6 +403,19 @@ export async function* adaptAgentStream(
       }
     } else {
       console.log('[Adapter] No newItems to check for files');
+    }
+
+    // Recalculate actualContainerId after all checks (in case we found it in the loop)
+    actualContainerId = containerId || stateContainerId || currentTurnContainerId || toolCallContainerId;
+    console.log('[Adapter] 🔍 DEBUG - Final containerId:', actualContainerId);
+    
+    // Update files array with the final container ID
+    if (actualContainerId && files.length > 0) {
+      files.forEach(file => {
+        if (!file.containerId) {
+          file.containerId = actualContainerId;
+        }
+      });
     }
 
     // ALTERNATIVE: If newItems didn't have files, try extracting from fullMessage directly

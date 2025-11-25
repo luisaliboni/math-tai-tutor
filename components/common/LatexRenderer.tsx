@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import 'katex/dist/katex.min.css';
 
 interface LatexRendererProps {
   content: string;
@@ -65,30 +64,28 @@ export default function LatexRenderer({ content }: LatexRendererProps) {
         }
       });
 
-      // Handle sandbox:// URLs (should have been replaced, but handle as fallback)
-      const sandboxMatches = processed.match(/\[([^\]]+)\]\(sandbox:\/\/?[^\)]+\)/g);
-      if (sandboxMatches) {
-        console.warn('[LatexRenderer] ⚠️ Found unreplaced sandbox:// URLs:', sandboxMatches.length);
-        console.warn('[LatexRenderer] URLs:', sandboxMatches);
-      }
-
-      processed = processed.replace(/\[([^\]]+)\]\(sandbox:\/\/?([^\)]+)\)/g, (match, text) => {
-        console.error('[LatexRenderer] ❌ Sandbox URL not replaced on backend:', match);
-        return `<span class="inline-flex items-center gap-2 bg-red-100 text-red-800 px-4 py-2 rounded-lg my-2 border-2 border-red-300">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          ⚠️ File link error: ${text}
-        </span>`;
+      // Handle sandbox:// URLs (should have been replaced, but show as simple link if not)
+      processed = processed.replace(/\[([^\]]+)\]\(sandbox:\/\/?([^\)]+)\)/g, (match, text, path) => {
+        console.warn('[LatexRenderer] ⚠️ Sandbox URL not replaced on backend, showing as simple link:', match);
+        // Show as plain text to avoid confusion (backend should replace these)
+        return `<span class="text-mathtai-green underline">${text}</span>`;
       });
 
-      // Handle markdown links - simple text hyperlinks for downloads
-      processed = processed.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, (match, text, url) => {
+      // Handle Markdown images ![alt](url) - support absolute or relative URLs
+      processed = processed.replace(/!\[([^\]]*)\]\((https?:\/\/[^\)\s]+|\/[^\)\s]+)\)/g, (match, alt, url) => {
+        console.log('[LatexRenderer] 🖼️ Rendering image:', alt, url);
+        return `<div class="my-4">
+          <img src="${url}" alt="${alt}" class="max-w-full h-auto rounded-lg shadow-md mx-auto" style="max-height: 400px;" />
+        </div>`;
+      });
+
+      // Handle markdown links - simple file download links (absolute or relative URLs)
+      processed = processed.replace(/\[([^\]]+)\]\((https?:\/\/[^\)\s]+|\/[^\)\s]+)\)/g, (match, text, url) => {
         // Check if this is a file download link from Supabase storage
-        if (url.includes('supabase') && url.includes('agent-files')) {
+        if (url.includes('/api/files/serve')) {
           console.log('[LatexRenderer] ✅ Rendering download link for:', text);
-          // Simple underlined text link with download attribute
-          return `<a href="${url}" download class="text-mathtai-green hover:text-mathtai-chalkboard underline font-medium">${text}</a>`;
+          // Ensure URL has all necessary parts, especially if it was somehow truncated
+          return `<a href="${url}" download="${text}" class="text-mathtai-green hover:text-mathtai-chalkboard underline font-semibold cursor-pointer">${text}</a>`;
         }
         // Regular links
         return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-mathtai-green hover:text-mathtai-chalkboard underline">${text}</a>`;

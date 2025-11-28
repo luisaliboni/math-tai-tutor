@@ -83,20 +83,21 @@ export async function POST(req: NextRequest) {
 
           // Get the streamed result from the workflow
           // Use the file-enabled workflow if files are provided
-          const streamedResult = fileIds && fileIds.length > 0
-            ? await createWorkflowStreamWithFiles({ input_as_text: message, file_ids: fileIds })
-            : await createWorkflowStream({ input_as_text: message });
-          console.log('[API] Got streamedResult');
-
-          // Use the adapter to handle the stream events
-          const adaptedStream = adaptAgentStream(
-            streamedResult,
-            (output) => output.message // Extract message from the final output
-          );
-          console.log('[API] Created adapted stream');
+          let stream: AsyncIterable<any>;
+          
+          if (fileIds && fileIds.length > 0) {
+            // For file-enabled workflow, use the adapter
+            const streamedResult = await createWorkflowStreamWithFiles({ input_as_text: message, file_ids: fileIds });
+            stream = adaptAgentStream(streamedResult, (output) => output.message);
+          } else {
+            // For multi-agent workflow, use the stream directly (it already yields StreamEvent)
+            stream = await createWorkflowStream({ input_as_text: message });
+          }
+          
+          console.log('[API] Got stream');
 
           // Stream the agent workflow
-          for await (const chunk of adaptedStream) {
+          for await (const chunk of stream) {
             console.log('[API] Received chunk:', chunk.type);
 
             if (chunk.type === 'text') {
@@ -105,6 +106,14 @@ export async function POST(req: NextRequest) {
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify({ type: 'text', content: chunk.content })}\n\n`)
               );
+            } else if (chunk.type === 'message_complete') {
+              // Agent 1's message is complete - send event to create new message for Agent 3
+              console.log('[API] Message complete, starting new message');
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ type: 'message_complete', message: chunk.message })}\n\n`)
+              );
+              // Reset fullMessage for the next agent
+              fullMessage = '';
             } else if (chunk.type === 'done') {
               finalOutput = chunk.output;
               fullMessage = chunk.message;

@@ -62,7 +62,7 @@ Do not answer anything taht is not the \"I am the first agent phrase.\"`,
   }
 });
 
-const agent = new Agent({
+export const agent = new Agent({
   name: "Agent",
   instructions: `Your task is just to ouput a true value to variable. 
 DO not say anythng or answer nothing in the chat. Just output variable in your output.`,
@@ -77,7 +77,7 @@ DO not say anythng or answer nothing in the chat. Just output variable in your o
   }
 });
 
-const agent1 = new Agent({
+export const agent1 = new Agent({
   name: "Agent",
   instructions: `Your only task is to say : \"I am the final agent\"
 No matter what the user is asking or prompting. 

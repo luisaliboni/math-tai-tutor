@@ -24,6 +24,7 @@ export async function* adaptAgentStream(
   try {
     let fullMessage = '';
     let hasFinalOutput = false;
+    let jsonBuffer = ''; // Buffer for accumulating partial JSON
 
     for await (const event of streamedResult) {
       // Handle raw model stream events (contains the text deltas)
@@ -33,7 +34,39 @@ export async function* adaptAgentStream(
         // Text streaming event - check for both text_stream and output_text_delta
         if (data.type === "text_stream" || data.type === "output_text_delta") {
           console.log('[Adapter] Found text event, full data:', JSON.stringify(data));
-          const text = data.text || data.delta || data.output || '';
+          let text = data.text || data.delta || data.output || '';
+          
+          // If we have a JSON buffer, add to it
+          if (jsonBuffer) {
+            jsonBuffer += text;
+            text = ''; // Don't use original text yet
+          } else if (text && (text.trim().startsWith('{') || text.includes('"message"'))) {
+            // Looks like JSON, start accumulating
+            jsonBuffer = text;
+            text = ''; // Don't yield yet
+          }
+          
+          // If we have a JSON buffer, try to parse it
+          if (jsonBuffer) {
+            try {
+              const parsed = JSON.parse(jsonBuffer);
+              if (parsed.message && typeof parsed.message === 'string') {
+                // Successfully parsed JSON with message field - extract the message
+                text = parsed.message;
+                jsonBuffer = ''; // Clear buffer
+                console.log('[Adapter] Extracted message from JSON:', text);
+              } else {
+                // JSON parsed but no message field, use buffer as-is
+                text = jsonBuffer;
+                jsonBuffer = '';
+              }
+            } catch (e) {
+              // Not complete JSON yet, don't yield anything and wait for more chunks
+              console.log('[Adapter] Accumulating JSON buffer, current length:', jsonBuffer.length);
+              continue; // Skip yielding this chunk, wait for more
+            }
+          }
+          
           if (text) {
             console.log('[Adapter] Yielding text chunk:', text);
             yield {
@@ -41,7 +74,7 @@ export async function* adaptAgentStream(
               content: text
             };
             fullMessage += text;
-          } else {
+          } else if (!jsonBuffer) {
             console.log('[Adapter] No text found in delta event');
           }
         }
@@ -62,13 +95,29 @@ export async function* adaptAgentStream(
             // Content is an array of content blocks
             for (const block of content) {
               if (block.type === 'text' && block.text) {
+                let text = block.text;
+                
+                // If the text looks like JSON with a message field, try to parse and extract the message
+                if (text && (text.trim().startsWith('{') || text.includes('"message"'))) {
+                  try {
+                    const parsed = JSON.parse(text);
+                    if (parsed.message && typeof parsed.message === 'string') {
+                      text = parsed.message;
+                      console.log('[Adapter] Extracted message from JSON in content block:', text);
+                    }
+                  } catch (e) {
+                    // Not valid JSON or doesn't have message field, use as-is
+                    console.log('[Adapter] Content block text is not JSON with message field, using as-is');
+                  }
+                }
+                
                 // If we haven't streamed any text yet, yield it all at once
                 if (!fullMessage) {
-                  fullMessage = block.text;
+                  fullMessage = text;
                   // Yield the full text as a single chunk
                   yield {
                     type: "text",
-                    content: block.text
+                    content: text
                   };
                 }
               }
@@ -79,6 +128,32 @@ export async function* adaptAgentStream(
     }
 
     console.log('[Adapter] Stream completed, getting final output');
+
+    // If we have a JSON buffer remaining, try to parse it one more time
+    if (jsonBuffer) {
+      try {
+        const parsed = JSON.parse(jsonBuffer);
+        if (parsed.message && typeof parsed.message === 'string') {
+          // Yield the extracted message
+          yield {
+            type: "text",
+            content: parsed.message
+          };
+          fullMessage += parsed.message;
+          jsonBuffer = '';
+        }
+      } catch (e) {
+        // If we can't parse it, just use the buffer as-is
+        if (jsonBuffer.trim()) {
+          yield {
+            type: "text",
+            content: jsonBuffer
+          };
+          fullMessage += jsonBuffer;
+        }
+        jsonBuffer = '';
+      }
+    }
 
     // After the stream completes, we need to get the final output
     // The StreamedRunResult has a finalOutput property that becomes available after streaming

@@ -47,5 +47,6 @@ export interface Attachment {
 
 export type StreamEvent =
   | { type: 'text'; content: string }
+  | { type: 'message_complete'; message: string }
   | { type: 'done'; message: string; output?: any; files?: FileInfo[]; containerId?: string }
   | { type: 'error'; message: string };

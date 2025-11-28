@@ -257,7 +257,7 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
       }
 
       // Create a temporary assistant message for streaming
-      const assistantMessageId = (Date.now() + 1).toString();
+      let assistantMessageId = (Date.now() + 1).toString();
       const tempAssistantMessage: Message = {
         id: assistantMessageId,
         role: 'assistant',
@@ -319,6 +319,22 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
                         : msg
                     )
                   );
+                } else if (data.type === 'message_complete') {
+                  // Agent 1's message is complete - create a new message for Agent 3
+                  console.log('[Chat] Message complete, creating new message');
+                  const newAssistantMessageId = (Date.now() + 1).toString();
+                  setMessages(prev => [
+                    ...prev,
+                    {
+                      id: newAssistantMessageId,
+                      role: 'assistant',
+                      content: '',
+                      created_at: new Date().toISOString()
+                    }
+                  ]);
+                  // Update the assistantMessageId to the new message
+                  assistantMessageId = newAssistantMessageId;
+                  accumulatedContent = '';
                 } else if (data.type === 'done') {
                   // Final message - ensure it's set
                   setMessages(prev =>

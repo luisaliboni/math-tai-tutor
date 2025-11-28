@@ -1,6 +1,5 @@
 import { NextRequest } from 'next/server';
-import { createWorkflowStream } from '@/agents/workflow';
-import { createWorkflowStreamWithFiles } from '@/agents/workflow-stream';
+import { createWorkflowStream, createWorkflowStreamWithFiles } from '@/agents/workflow-stream';
 import { adaptAgentStream } from '@/lib/stream-adapter';
 import { FileInfo } from '@/types';
 import { formatAttachmentMarkdown, isImageFile } from '@/utils/attachments';

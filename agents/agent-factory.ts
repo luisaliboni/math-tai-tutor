@@ -1,16 +1,15 @@
 import { codeInterpreterTool, Agent } from "@openai/agents";
-import { z } from "zod";
-
-const MyAgentSchema = z.object({
-  message: z.string(),
-  tree_png_url: z.string()
-});
+import { myAgent } from "./workflow-generated";
 
 /**
  * Creates an agent with the specified file IDs for Code Interpreter
  * This allows the agent to access uploaded files seamlessly
+ * 
+ * This function reads the base agent from workflow-generated.ts (which reads from workflow-paste.ts)
+ * and creates a new instance with file support.
  */
 export function createMathAgent(fileIds: string[] = []) {
+  // Create code interpreter with file IDs
   const codeInterpreter = codeInterpreterTool({
     container: {
       type: "auto",
@@ -18,48 +17,14 @@ export function createMathAgent(fileIds: string[] = []) {
     }
   });
 
+  // Create a new agent based on the base agent configuration but with file support
+  // We read the configuration from the sacred file's agent
   return new Agent({
-    name: "My agent",
-    instructions: `you will always generate a probability tree using graphviz, no matter what the user asks. You will render it as a png image and provide the download link. 
-
-Here is an example: 
-
-**Probability Tree Diagram (branching with probabilities only):**
-
-from graphviz import Digraph
-from IPython.display import Image, display
-
-dot = Digraph(format='png', graph_attr={'rankdir': 'LR'})
-dot.node('Start', '', shape='point')
-dot.node('R1', 'R', shape='plaintext')
-dot.node('B1', 'B', shape='plaintext')
-dot.node('RR', 'R', shape='plaintext')
-dot.node('RB', 'B', shape='plaintext')
-dot.node('BR', 'R', shape='plaintext')
-dot.node('BB', 'B', shape='plaintext')
-dot.edge('Start', 'R1', label='p_R')
-dot.edge('Start', 'B1', label='p_B')
-dot.edge('R1', 'RR', label='p_R')
-dot.edge('R1', 'RB', label='p_B')
-dot.edge('B1', 'BR', label='p_R')
-dot.edge('B1', 'BB', label='p_B')
-output_path = "/mnt/data/probability_tree"
-png_path = dot.render(output_path, format="png", cleanup=True)
-display(Image(filename=png_path))
-
-You can come up with values and node names . Be creative.
-If the user has uploaded files, you can access them directly using the code interpreter. The files are automatically available in your environment.`,
-    model: "gpt-5.1",
-    tools: [
-      codeInterpreter
-    ],
-    outputType: MyAgentSchema,
-    modelSettings: {
-      reasoning: {
-        effort: "high",
-        summary: "auto"
-      },
-      store: true
-    }
+    name: myAgent.name,
+    instructions: myAgent.instructions + "\n\nIf the user has uploaded files, you can access them directly using the code interpreter. The files are automatically available in your environment.",
+    model: myAgent.model,
+    tools: [codeInterpreter],
+    outputType: myAgent.outputType,
+    modelSettings: myAgent.modelSettings
   });
 }

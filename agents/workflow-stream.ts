@@ -1,4 +1,5 @@
 import { AgentInputItem, Runner } from "@openai/agents";
+import { myAgent, type WorkflowInput } from "./workflow-generated";
 import { createMathAgent } from "./agent-factory";
 
 type WorkflowStreamInput = {
@@ -7,35 +8,51 @@ type WorkflowStreamInput = {
 };
 
 /**
- * Streaming workflow that supports file uploads
- * This is a separate implementation that doesn't modify the original workflow.ts
+ * Creates conversation history from input text
  */
-export async function createWorkflowStreamWithFiles(workflow: WorkflowStreamInput) {
-  // Create agent with file IDs if provided
-  const agent = createMathAgent(workflow.file_ids || []);
-
-  const conversationHistory: AgentInputItem[] = [
+function createConversationHistory(inputText: string): AgentInputItem[] {
+  return [
     {
       role: "user",
       content: [
         {
           type: "input_text",
-          text: workflow.input_as_text
+          text: inputText
         }
       ]
     }
   ];
+}
 
-  const runner = new Runner({
+/**
+ * Creates a runner with standard trace metadata
+ */
+function createRunner() {
+  return new Runner({
     traceMetadata: {
       __trace_source__: "agent-builder",
       workflow_id: "wf_6925de9fb40c81908958e9185cdf8c6a00c338ec80f21f2f"
     }
   });
+}
 
-  // Call run with stream: true to get StreamedRunResult (which is AsyncIterable)
-  const streamedResult = await runner.run(agent, conversationHistory, { stream: true });
+/**
+ * Streaming workflow - simple version (no files)
+ * Uses the agent from workflow-generated.ts (which reads from workflow-paste.ts)
+ */
+export async function createWorkflowStream(workflow: WorkflowInput) {
+  const conversationHistory = createConversationHistory(workflow.input_as_text);
+  const runner = createRunner();
+  return await runner.run(myAgent, conversationHistory, { stream: true });
+}
 
-  // Return the async iterable stream
-  return streamedResult;
+/**
+ * Streaming workflow with file upload support
+ * Creates an agent with file IDs via agent-factory (which reads from workflow-generated.ts)
+ */
+export async function createWorkflowStreamWithFiles(workflow: WorkflowStreamInput) {
+  const agent = createMathAgent(workflow.file_ids || []);
+  const conversationHistory = createConversationHistory(workflow.input_as_text);
+  const runner = createRunner();
+  return await runner.run(agent, conversationHistory, { stream: true });
 }

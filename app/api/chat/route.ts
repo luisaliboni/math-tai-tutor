@@ -129,6 +129,58 @@ export async function POST(req: NextRequest) {
           }
 
           console.log('[API] Finished streaming');
+          console.log('[API] Final output:', JSON.stringify(finalOutput, null, 2));
+
+          // Check finalOutput for tree_png_url or similar structured fields
+          if (!files || files.length === 0) {
+            if (finalOutput && typeof finalOutput === 'object') {
+              // Check for tree_png_url field
+              if ((finalOutput as any).tree_png_url) {
+                const url = (finalOutput as any).tree_png_url;
+                console.log('[API] ✅ Found tree_png_url in finalOutput:', url);
+                
+                // Extract file path from sandbox:// URL
+                const sandboxMatch = url.match(/sandbox:\/\/?([^\s\)\]]+)/);
+                if (sandboxMatch && containerId) {
+                  const filePath = sandboxMatch[1];
+                  const fileName = filePath.split('/').pop() || 'tree.png';
+                  
+                  console.log('[API] ✅ Extracted file from tree_png_url:', { fileName, filePath });
+                  
+                  files = [{
+                    id: '',
+                    path: filePath,
+                    containerId: containerId,
+                    fileName: fileName
+                  }];
+                }
+              }
+              
+              // Also check for any other URL fields
+              for (const [key, value] of Object.entries(finalOutput)) {
+                if ((key.includes('url') || key.includes('file') || key.includes('image')) && 
+                    typeof value === 'string' && value.includes('sandbox://')) {
+                  const sandboxMatch = value.match(/sandbox:\/\/?([^\s\)\]]+)/);
+                  if (sandboxMatch && containerId) {
+                    const filePath = sandboxMatch[1];
+                    const fileName = filePath.split('/').pop() || 'download.png';
+                    
+                    if (!files || !files.some(f => f.path === filePath)) {
+                      console.log('[API] ✅ Extracted file from', key, ':', { fileName, filePath });
+                      
+                      if (!files) files = [];
+                      files.push({
+                        id: '',
+                        path: filePath,
+                        containerId: containerId,
+                        fileName: fileName
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
 
           // Process files if any were generated
           if (files && files.length > 0) {
@@ -284,13 +336,23 @@ export async function POST(req: NextRequest) {
                       console.log('[API] ✅ URL replaced successfully');
                       console.log('[API] Message before:', messageBefore.substring(0, 200));
                       console.log('[API] Message after:', fullMessage.substring(0, 200));
-                    }
-
-                    // Ensure image previews are visible even if link text already existed
-                    if (isImageFile(fileRef.fileName) && !fallbackAppended) {
-                      const previewMarkdown = formatAttachmentMarkdown(fileRef.fileName, downloadResult.url);
-                      if (!fullMessage.includes(previewMarkdown.trim())) {
-                        fullMessage += previewMarkdown;
+                      
+                      // For images, ensure we have the image markdown (but avoid duplicates)
+                      // Only add image preview if we replaced a URL and it's an image
+                      if (isImageFile(fileRef.fileName)) {
+                        // Check if image markdown already exists
+                        const imageMarkdown = `![${fileRef.fileName}](${downloadResult.url})`;
+                        if (!fullMessage.includes(imageMarkdown)) {
+                          // Add image markdown - find where to insert it (before download links)
+                          // Look for download link pattern and insert image before it
+                          const downloadLinkPattern = new RegExp(`\\[Download.*?\\]\\(.*?${downloadResult.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*?\\)`);
+                          if (downloadLinkPattern.test(fullMessage)) {
+                            fullMessage = fullMessage.replace(downloadLinkPattern, imageMarkdown + '\n\n$&');
+                          } else {
+                            // No download link found, just prepend the image
+                            fullMessage = imageMarkdown + '\n\n' + fullMessage;
+                          }
+                        }
                       }
                     }
                   } catch (downloadError) {

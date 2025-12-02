@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
     const path = searchParams.get('path');
     const fallbackName = path?.split('/').pop() || 'download.txt';
     const filename = searchParams.get('filename') || fallbackName;
+    const forceDownload = searchParams.get('download') === 'true';
 
     if (!path) {
       return new Response(
@@ -35,14 +36,34 @@ export async function GET(req: NextRequest) {
     }
 
     const buffer = Buffer.from(await data.arrayBuffer());
+    
+    // Check if file is empty
+    if (buffer.length === 0) {
+      console.error('[File Serve] File is empty:', path);
+      return new Response(
+        JSON.stringify({ error: 'File is empty' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    
     const contentType = getContentType(filename);
+    console.log('[File Serve] Serving file:', { path, filename, contentType, size: buffer.length });
+    
+    // Determine content disposition:
+    // - If forceDownload is true, always use attachment
+    // - If it's an image and not forcing download, serve inline for display
+    // - Otherwise, serve as attachment for download
+    const isImage = contentType.startsWith('image/');
+    const contentDisposition = forceDownload || !isImage
+      ? `attachment; filename="${encodeURIComponent(filename)}"`
+      : `inline; filename="${encodeURIComponent(filename)}"`;
 
     return new Response(buffer, {
       status: 200,
       headers: {
         'Content-Type': contentType,
         'Content-Length': buffer.length.toString(),
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+        'Content-Disposition': contentDisposition,
         'Cache-Control': 'private, max-age=300',
       },
     });

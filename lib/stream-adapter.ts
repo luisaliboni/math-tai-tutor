@@ -514,6 +514,58 @@ export async function* adaptAgentStream(
       }
     }
 
+    // Check finalOutput for tree_png_url or similar structured output fields
+    if (files.length === 0 && finalOutput) {
+      console.log('[Adapter] 🔍 Checking finalOutput for file URLs');
+      
+      // Check for tree_png_url field (from agent schema)
+      if (finalOutput.tree_png_url) {
+        const url = finalOutput.tree_png_url;
+        console.log('[Adapter] ✅ Found tree_png_url in finalOutput:', url);
+        
+        // Extract file path from sandbox:// URL
+        const sandboxMatch = url.match(/sandbox:\/\/?([^\s\)\]]+)/);
+        if (sandboxMatch) {
+          const filePath = sandboxMatch[1];
+          const fileName = filePath.split('/').pop() || 'tree.png';
+          
+          console.log('[Adapter] ✅ Extracted file from tree_png_url:', { fileName, filePath });
+          
+          files.push({
+            id: '',
+            path: filePath,
+            containerId: actualContainerId || '',
+            fileName: fileName
+          });
+        }
+      }
+      
+      // Also check for any other URL fields that might contain file paths
+      for (const [key, value] of Object.entries(finalOutput)) {
+        if (key.includes('url') || key.includes('file') || key.includes('image')) {
+          if (typeof value === 'string' && value.includes('sandbox://')) {
+            const sandboxMatch = value.match(/sandbox:\/\/?([^\s\)\]]+)/);
+            if (sandboxMatch) {
+              const filePath = sandboxMatch[1];
+              const fileName = filePath.split('/').pop() || 'download.png';
+              
+              // Avoid duplicates
+              if (!files.some(f => f.path === filePath)) {
+                console.log('[Adapter] ✅ Extracted file from', key, ':', { fileName, filePath });
+                
+                files.push({
+                  id: '',
+                  path: filePath,
+                  containerId: actualContainerId || '',
+                  fileName: fileName
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
     if (files.length > 0) {
       console.log('[Adapter] 📁 Final files array:', files);
       console.log('[Adapter] 📁 Using containerId:', actualContainerId);

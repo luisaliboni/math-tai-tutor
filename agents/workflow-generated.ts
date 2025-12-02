@@ -39,55 +39,61 @@
  * DO NOT add exports - the script handles that automatically!
  */
 
+import { codeInterpreterTool, Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 import { z } from "zod";
-import { Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 
-const MyAgentSchema = z.object({ message: z.string() });
-const AgentSchema = z.object({ variable: z.boolean(), message: z.string() });
-const AgentSchema1 = z.object({ message: z.string() });
+
+// Tool definitions
+const codeInterpreter = codeInterpreterTool({
+  container: {
+    type: "auto",
+    file_ids: []
+  }
+})
+const MyAgentSchema = z.object({ message: z.string(), tree_png_url: z.string() });
 export const myAgent = new Agent({
   name: "My agent",
-  instructions: `You are a helpful assistant.
-Your only task is to say \"I am the first agent\". No matter what the user is asking or prompting. 
+  instructions: `you will always generate a probability tree using graphviz, no matter what the user asks. You will render it as a png image and provide the donwload link. 
 
-Do not answer anything taht is not the \"I am the first agent phrase.\"`,
+Here is an example: 
+
+
+**Probability Tree Diagram (branching with probabilities only):**
+
+from graphviz import Digraph
+from IPython.display import Image, display
+
+dot = Digraph(format='png', graph_attr={'rankdir': 'LR'})
+
+dot.node('Start', '', shape='point')
+dot.node('R1', 'R', shape='plaintext')
+dot.node('B1', 'B', shape='plaintext')
+dot.node('RR', 'R', shape='plaintext')
+dot.node('RB', 'B', shape='plaintext')
+dot.node('BR', 'R', shape='plaintext')
+dot.node('BB', 'B', shape='plaintext')
+
+dot.edge('Start', 'R1', label='p_R')
+dot.edge('Start', 'B1', label='p_B')
+
+dot.edge('R1', 'RR', label='p_R')
+dot.edge('R1', 'RB', label='p_B')
+dot.edge('B1', 'BR', label='p_R')
+dot.edge('B1', 'BB', label='p_B')
+
+output_path = \"/mnt/data/probability_tree\"
+png_path = dot.render(output_path, format=\"png\", cleanup=True)
+display(Image(filename=png_path))
+
+You can come up with values and node names . Be creative. `,
   model: "gpt-5.1",
+  tools: [
+    codeInterpreter
+  ],
   outputType: MyAgentSchema,
   modelSettings: {
     reasoning: {
-      effort: "low",
-      summary: "auto"
-    },
-    store: true
-  }
-});
-
-export const agent = new Agent({
-  name: "Agent",
-  instructions: `Your task is just to ouput a true value to variable. 
-DO not say anythng or answer nothing in the chat. Just output variable in your output.`,
-  model: "gpt-5.1",
-  outputType: AgentSchema,
-  modelSettings: {
-    reasoning: {
-      effort: "low",
-      summary: "auto"
-    },
-    store: true
-  }
-});
-
-export const agent1 = new Agent({
-  name: "Agent",
-  instructions: `Your only task is to say : \"I am the final agent\"
-No matter what the user is asking or prompting. 
-
-DO not say nothing other than \"I am the final agent\"`,
-  model: "gpt-5.1",
-  outputType: AgentSchema1,
-  modelSettings: {
-    reasoning: {
-      effort: "low",
+      effort: "high",
       summary: "auto"
     },
     store: true
@@ -100,13 +106,16 @@ export type WorkflowInput = { input_as_text: string };
 // Main code entrypoint
 const rawRunWorkflow = async (workflow: WorkflowInput) => {
   return await withTrace("New workflow", async () => {
+    const state = {
+
+    };
     const conversationHistory: AgentInputItem[] = [
       { role: "user", content: [{ type: "input_text", text: workflow.input_as_text }] }
     ];
     const runner = new Runner({
       traceMetadata: {
         __trace_source__: "agent-builder",
-        workflow_id: "wf_692a064a4e988190b95301e646814ef10c2419caf18a1091"
+        workflow_id: "wf_6925de9fb40c81908958e9185cdf8c6a00c338ec80f21f2f"
       }
     });
     const myAgentResultTemp = await runner.run(
@@ -125,39 +134,8 @@ const rawRunWorkflow = async (workflow: WorkflowInput) => {
       output_text: JSON.stringify(myAgentResultTemp.finalOutput),
       output_parsed: myAgentResultTemp.finalOutput
     };
-    const agentResultTemp = await runner.run(
-      agent,
-      [
-        ...conversationHistory
-      ]
-    );
 
-    if (!agentResultTemp.finalOutput) {
-        throw new Error("Agent result is undefined");
-    }
-
-    const agentResult = {
-      output_text: JSON.stringify(agentResultTemp.finalOutput),
-      output_parsed: agentResultTemp.finalOutput
-    };
-    const agentResultTemp1 = await runner.run(
-      agent1,
-      [
-        ...conversationHistory
-      ]
-    );
-    conversationHistory.push(...agentResultTemp1.newItems.map((item) => item.rawItem));
-
-    if (!agentResultTemp1.finalOutput) {
-        throw new Error("Agent result is undefined");
-    }
-
-    const agentResult1 = {
-      output_text: JSON.stringify(agentResultTemp1.finalOutput),
-      output_parsed: agentResultTemp1.finalOutput
-    };
-
-    return agentResult1;
+    return myAgentResult;
   });
 }
 

@@ -18,12 +18,25 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedFileInfo, setUploadedFileInfo] = useState<UploadedFileInfo | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Auto-scroll to bottom when new messages arrive
+  // Only scroll if user is already near the bottom (within 100px)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+    
+    // Only auto-scroll if user is already near the bottom
+    if (isNearBottom) {
+      // Use requestAnimationFrame to ensure DOM has updated
+      requestAnimationFrame(() => {
+        container.scrollTop = container.scrollHeight;
+      });
+    }
   }, [messages]);
 
   // Load chat history when conversation changes
@@ -205,6 +218,13 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
     setMessages(prev => {
       const newMessages = [...prev, tempUserMessage];
       console.log('[UI] Updated messages array:', newMessages);
+      // Always scroll to bottom when user sends a message
+      requestAnimationFrame(() => {
+        const container = messagesContainerRef.current;
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        }
+      });
       return newMessages;
     });
 
@@ -415,7 +435,7 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
         </div>
 
         {/* Messages Container */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+        <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
           {messages.length === 0 && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center text-gray-500">

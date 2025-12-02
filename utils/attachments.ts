@@ -52,11 +52,13 @@ export function isImageFile(filename: string): boolean {
 /**
  * Format Markdown for an attachment
  * Files -> [Name](url)
- * Images -> ![Name](url)
+ * Images -> ![Name](url) with download link
  */
 export function formatAttachmentMarkdown(filename: string, url: string): string {
   if (isImageFile(filename)) {
-    return `\n\n![${filename}](${url})\n`;
+    // For images, show both the image (inline) and a download link (with download=true)
+    const downloadUrl = url.includes('?') ? `${url}&download=true` : `${url}?download=true`;
+    return `\n\n![${filename}](${url})\n\n[Download ${filename}](${downloadUrl})\n`;
   }
   return `\n\n[📄 ${filename}](${url})\n`;
 }

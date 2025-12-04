@@ -27,16 +27,34 @@ generatedContent = generatedContent.replace(/export\s+const\s+myAgent\s*=/g, 'co
 generatedContent = generatedContent.replace(/export\s+const\s+agent\s*=\s*new\s+Agent\(/g, 'const agent = new Agent(');
 generatedContent = generatedContent.replace(/export\s+const\s+mainAgent\s*=\s*new\s+Agent\(/g, 'const mainAgent = new Agent(');
 
+let agentName = null; // Track which agent name was found
+
 // Try to find and export myAgent first (most common)
+// Check for various case variations
 if (generatedContent.includes('const myAgent = new Agent(')) {
   generatedContent = generatedContent.replace(/const\s+myAgent\s*=\s*new\s+Agent\(/g, 'export const myAgent = new Agent(');
   agentFound = true;
-} else if (generatedContent.includes('const agent = new Agent(')) {
-  generatedContent = generatedContent.replace(/const\s+agent\s*=\s*new\s+Agent\(/g, 'export const agent = new Agent(');
+  agentName = 'myAgent';
+} else if (generatedContent.includes('const myagent = new Agent(')) {
+  // Export as 'myagent' first, then create alias as 'myAgent'
+  generatedContent = generatedContent.replace(/const\s+myagent\s*=\s*new\s+Agent\(/g, 'export const myagent = new Agent(');
   agentFound = true;
+  agentName = 'myagent';
+} else if (generatedContent.includes('const agent = new Agent(')) {
+  // Export as 'agent' first
+  const beforeReplace = generatedContent;
+  generatedContent = generatedContent.replace(/const\s+agent\s*=\s*new\s+Agent\(/g, 'export const agent = new Agent(');
+  if (!generatedContent.includes('export const agent = new Agent(')) {
+    console.error('❌ Failed to export agent! Replacement did not work.');
+    console.error('Before replace had const agent:', beforeReplace.includes('const agent = new Agent('));
+    console.error('After replace has export const agent:', generatedContent.includes('export const agent = new Agent('));
+  }
+  agentFound = true;
+  agentName = 'agent';
 } else if (generatedContent.includes('const mainAgent = new Agent(')) {
   generatedContent = generatedContent.replace(/const\s+mainAgent\s*=\s*new\s+Agent\(/g, 'export const mainAgent = new Agent(');
   agentFound = true;
+  agentName = 'mainAgent';
 }
 
 if (!agentFound) {
@@ -132,6 +150,29 @@ export const runWorkflow = async (workflow: WorkflowInput) => {
   generatedContent = generatedContent + wrapperCode;
 }
 
+// Add myAgent export alias if agent was found with a different name
+if (agentFound && agentName && agentName !== 'myAgent') {
+  const aliasCode = `
+
+// Export alias for compatibility with existing codebase
+export const myAgent = ${agentName};
+`;
+  generatedContent = generatedContent + aliasCode;
+}
+
+// Also export agent1 alias if myagent2 exists (for multi-agent workflows)
+if (generatedContent.includes('const myagent2 = new Agent(') || generatedContent.includes('export const myagent2 = new Agent(')) {
+  // Export myagent2 as agent1 for compatibility
+  if (!generatedContent.includes('export const agent1 =')) {
+    const agent1Alias = `
+
+// Export alias for multi-agent workflow compatibility
+export const agent1 = myagent2;
+`;
+    generatedContent = generatedContent + agent1Alias;
+  }
+}
+
 // Add header comment
 const header = `/**
  * AUTO-GENERATED FILE - DO NOT MODIFY MANUALLY
@@ -150,6 +191,25 @@ const header = `/**
 `;
 
 generatedContent = header + generatedContent;
+
+// Verify and fix exports before writing (safety check)
+if (agentFound && agentName === 'agent') {
+  if (!generatedContent.includes('export const agent = new Agent(')) {
+    console.warn('⚠️  Agent export missing, fixing...');
+    generatedContent = generatedContent.replace(/const\s+agent\s*=\s*new\s+Agent\(/g, 'export const agent = new Agent(');
+  }
+  // Ensure myAgent alias exists
+  if (!generatedContent.includes('export const myAgent = agent') && !generatedContent.includes('export const myAgent =')) {
+    // Add myAgent alias at the end (before the wrapper code if it exists)
+    const aliasCode = '\n\n// Export alias for compatibility with existing codebase\nexport const myAgent = agent;';
+    // Insert before the wrapper code section
+    if (generatedContent.includes('Wrapped workflow function')) {
+      generatedContent = generatedContent.replace(/(\n\/\*\*\n \* Wrapped workflow function)/, aliasCode + '$1');
+    } else {
+      generatedContent = generatedContent + aliasCode;
+    }
+  }
+}
 
 // Write the generated file
 fs.writeFileSync(workflowGeneratedPath, generatedContent, 'utf-8');

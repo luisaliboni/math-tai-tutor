@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import LatexRenderer from '@/components/common/LatexRenderer';
 import ConversationSidebar from './ConversationSidebar';
+import ApprovalRequest from './ApprovalRequest';
 import { Message, UploadedFileInfo } from '@/types';
 import { MAX_TITLE_LENGTH, DEFAULT_CONVERSATION_TITLE, ACCEPTED_FILE_TYPES } from '@/utils/constants';
 
@@ -17,6 +18,12 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedFileInfo, setUploadedFileInfo] = useState<UploadedFileInfo | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<Map<string, { message: string; messageId: string }>>(new Map());
+  
+  // Debug: Log pendingApprovals changes
+  useEffect(() => {
+    console.log('[Chat] pendingApprovals updated:', Array.from(pendingApprovals.entries()));
+  }, [pendingApprovals]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -355,6 +362,25 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
                   // Update the assistantMessageId to the new message
                   assistantMessageId = newAssistantMessageId;
                   accumulatedContent = '';
+                } else if (data.type === 'approval_request') {
+                  // Handle approval request
+                  console.log('[Chat] Approval request received:', data);
+                  console.log('[Chat] Current assistantMessageId:', assistantMessageId);
+                  console.log('[Chat] Current messages:', messages.length);
+                  
+                  // Store the approval with the current assistant message ID
+                  setPendingApprovals(prev => {
+                    const newMap = new Map(prev);
+                    newMap.set(data.approvalId, {
+                      message: data.message,
+                      messageId: assistantMessageId
+                    });
+                    console.log('[Chat] Updated pendingApprovals:', Array.from(newMap.entries()));
+                    return newMap;
+                  });
+                  
+                  // Don't update the message content - just show the approval UI
+                  // The approval message will be shown in the ApprovalRequest component
                 } else if (data.type === 'done') {
                   // Final message - ensure it's set
                   setMessages(prev =>
@@ -405,6 +431,64 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
     }
   };
 
+  const handleApprove = async (approvalId: string) => {
+    console.log('[Chat] Approving:', approvalId);
+    try {
+      const response = await fetch('/api/approval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          approvalId,
+          approved: true,
+          userId,
+          conversationId: currentConversationId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send approval');
+      }
+
+      // Remove the approval from pending
+      setPendingApprovals(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(approvalId);
+        return newMap;
+      });
+    } catch (error) {
+      console.error('Error sending approval:', error);
+    }
+  };
+
+  const handleReject = async (approvalId: string) => {
+    console.log('[Chat] Rejecting:', approvalId);
+    try {
+      const response = await fetch('/api/approval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          approvalId,
+          approved: false,
+          userId,
+          conversationId: currentConversationId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send rejection');
+      }
+
+      // Remove the approval from pending
+      setPendingApprovals(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(approvalId);
+        return newMap;
+      });
+    } catch (error) {
+      console.error('Error sending rejection:', error);
+    }
+  };
+
   return (
     <div className="flex h-full w-full bg-white overflow-hidden">
       {/* Sidebar with conversation history */}
@@ -449,15 +533,25 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
           )}
 
           {messages.map((message) => {
-            // Skip rendering assistant messages with no content (they're being streamed)
-            if (message.role === 'assistant' && !message.content.trim()) {
+            // Check if this message has a pending approval
+            const approval = Array.from(pendingApprovals.entries()).find(
+              ([_, approvalData]) => approvalData.messageId === message.id
+            );
+            
+            // Debug logging
+            if (approval) {
+              console.log('[Chat] Found approval for message:', message.id, approval);
+            }
+            
+            // Skip rendering assistant messages with no content (unless they have an approval)
+            if (message.role === 'assistant' && !message.content.trim() && !approval) {
               return null;
             }
 
             return (
               <div
                 key={message.id}
-                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                className={`flex flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}
               >
                 <div
                   className={`max-w-[80%] rounded-lg p-4 overflow-hidden ${
@@ -472,6 +566,16 @@ export default function ChatWithHistory({ userId }: ChatWithHistoryProps) {
                     <LatexRenderer content={message.content} />
                   )}
                 </div>
+                {approval && (
+                  <div className="mt-2">
+                    <ApprovalRequest
+                      message={approval[1].message}
+                      approvalId={approval[0]}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
+                    />
+                  </div>
+                )}
               </div>
             );
           })}

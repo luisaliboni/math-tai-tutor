@@ -114,6 +114,16 @@ export async function POST(req: NextRequest) {
               );
               // Reset fullMessage for the next agent
               fullMessage = '';
+            } else if (chunk.type === 'approval_request') {
+              // Approval request - forward to frontend
+              console.log('[API] Approval request received:', chunk);
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify({ 
+                  type: 'approval_request', 
+                  message: chunk.message,
+                  approvalId: chunk.approvalId 
+                })}\n\n`)
+              );
             } else if (chunk.type === 'done') {
               finalOutput = chunk.output;
               fullMessage = chunk.message;
@@ -336,7 +346,7 @@ export async function POST(req: NextRequest) {
                       console.log('[API] ✅ URL replaced successfully');
                       console.log('[API] Message before:', messageBefore.substring(0, 200));
                       console.log('[API] Message after:', fullMessage.substring(0, 200));
-                      
+
                       // For images, ensure we have the image markdown (but avoid duplicates)
                       // Only add image preview if we replaced a URL and it's an image
                       if (isImageFile(fileRef.fileName)) {

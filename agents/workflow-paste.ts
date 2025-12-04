@@ -25,72 +25,53 @@
  * DO NOT add exports - the script handles that automatically!
  */
 
-import { codeInterpreterTool, Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 import { z } from "zod";
+import { Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 
+const MyagentSchema = z.object({ message: z.string() });
+const Myagent2Schema = z.object({ message: z.string() });
+const myagent = new Agent({
+  name: "MyAgent",
+  instructions: `just answer with an equation in lates. Example: 
 
-// Tool definitions
-const codeInterpreter = codeInterpreterTool({
-  container: {
-    type: "auto",
-    file_ids: []
-  }
-})
-const MyAgentSchema = z.object({ message: z.string(), tree_png_url: z.string() });
-const myAgent = new Agent({
-  name: "My agent",
-  instructions: `you will always generate a probability tree using graphviz, no matter what the user asks. You will render it as a png image and provide the donwload link. 
-
-Here is an example: 
-
-
-**Probability Tree Diagram (branching with probabilities only):**
-
-from graphviz import Digraph
-from IPython.display import Image, display
-
-dot = Digraph(format='png', graph_attr={'rankdir': 'LR'})
-
-dot.node('Start', '', shape='point')
-dot.node('R1', 'R', shape='plaintext')
-dot.node('B1', 'B', shape='plaintext')
-dot.node('RR', 'R', shape='plaintext')
-dot.node('RB', 'B', shape='plaintext')
-dot.node('BR', 'R', shape='plaintext')
-dot.node('BB', 'B', shape='plaintext')
-
-dot.edge('Start', 'R1', label='p_R')
-dot.edge('Start', 'B1', label='p_B')
-
-dot.edge('R1', 'RR', label='p_R')
-dot.edge('R1', 'RB', label='p_B')
-dot.edge('B1', 'BR', label='p_R')
-dot.edge('B1', 'BB', label='p_B')
-
-output_path = \"/mnt/data/probability_tree\"
-png_path = dot.render(output_path, format=\"png\", cleanup=True)
-display(Image(filename=png_path))
-
-You can come up with values and node names . Be creative. `,
+$$2*x+3$$
+`,
   model: "gpt-5.1",
-  tools: [
-    codeInterpreter
-  ],
-  outputType: MyAgentSchema,
+  outputType: MyagentSchema,
   modelSettings: {
     reasoning: {
-      effort: "high",
+      effort: "low",
       summary: "auto"
     },
     store: true
   }
 });
 
+const myagent2 = new Agent({
+  name: "MyAgent2",
+  instructions: "you just say .. you approved",
+  model: "gpt-5.1",
+  outputType: Myagent2Schema,
+  modelSettings: {
+    reasoning: {
+      effort: "low",
+      summary: "auto"
+    },
+    store: true
+  }
+});
+
+const approvalRequest = (message: string) => {
+
+  // TODO: Implement
+  return true;
+}
+
 type WorkflowInput = { input_as_text: string };
 
 
 // Main code entrypoint
-const runWorkflow = async (workflow: WorkflowInput) => {
+export const runWorkflow = async (workflow: WorkflowInput) => {
   return await withTrace("New workflow", async () => {
     const state = {
 
@@ -101,26 +82,46 @@ const runWorkflow = async (workflow: WorkflowInput) => {
     const runner = new Runner({
       traceMetadata: {
         __trace_source__: "agent-builder",
-        workflow_id: "wf_6925de9fb40c81908958e9185cdf8c6a00c338ec80f21f2f"
+        workflow_id: "wf_690ceb2e381881909543d16f8e1af6ec0749abe400f4b4e7"
       }
     });
-    const myAgentResultTemp = await runner.run(
-      myAgent,
+    const myagentResultTemp = await runner.run(
+      myagent,
       [
         ...conversationHistory
       ]
     );
-    conversationHistory.push(...myAgentResultTemp.newItems.map((item) => item.rawItem));
+    conversationHistory.push(...myagentResultTemp.newItems.map((item) => item.rawItem));
 
-    if (!myAgentResultTemp.finalOutput) {
+    if (!myagentResultTemp.finalOutput) {
         throw new Error("Agent result is undefined");
     }
 
-    const myAgentResult = {
-      output_text: JSON.stringify(myAgentResultTemp.finalOutput),
-      output_parsed: myAgentResultTemp.finalOutput
+    const myagentResult = {
+      output_text: JSON.stringify(myagentResultTemp.finalOutput),
+      output_parsed: myagentResultTemp.finalOutput
     };
+    const approvalMessage = "hi.. do you wnat o proceed?";
 
-    return myAgentResult;
+    if (approvalRequest(approvalMessage)) {
+        const myagent2ResultTemp = await runner.run(
+          myagent2,
+          [
+            ...conversationHistory
+          ]
+        );
+        conversationHistory.push(...myagent2ResultTemp.newItems.map((item) => item.rawItem));
+
+        if (!myagent2ResultTemp.finalOutput) {
+            throw new Error("Agent result is undefined");
+        }
+
+        const myagent2Result = {
+          output_text: JSON.stringify(myagent2ResultTemp.finalOutput),
+          output_parsed: myagent2ResultTemp.finalOutput
+        };
+    } else {
+
+    }
   });
 }

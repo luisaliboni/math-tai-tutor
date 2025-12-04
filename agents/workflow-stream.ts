@@ -61,6 +61,7 @@ export async function* createMultiAgentStream(workflow: WorkflowInput): AsyncGen
   
   // Step 1: Stream Agent 1 (myAgent) - output appears in chat
   console.log('[Stream] Starting Agent 1 (myAgent)');
+  // runner.run() with { stream: true } returns a Promise that resolves to an async iterable
   const agent1Stream = await runner.run(myAgent, conversationHistory, { stream: true });
   
   // Stream Agent 1's output
@@ -79,31 +80,102 @@ export async function* createMultiAgentStream(workflow: WorkflowInput): AsyncGen
   }
   
   // Get Agent 1's final output and update conversation history
-  const agent1Result = agent1Stream as any;
-  const agent1Output = agent1Result.finalOutput || agent1FinalOutput;
-  if (agent1Output && agent1Result.newItems) {
-    conversationHistory.push(...agent1Result.newItems.map((item: any) => item.rawItem));
+  // When streaming, we can't access finalOutput/newItems directly from the stream
+  // We rely on the output collected from stream events (agent1FinalOutput)
+  // For conversation history, we'll need to reconstruct from the streamed output
+  if (agent1FinalOutput) {
+    // Add the agent's response to conversation history
+    conversationHistory.push({
+      role: "assistant",
+      content: [{ type: "output_text", text: typeof agent1FinalOutput === 'string' ? agent1FinalOutput : agent1FinalOutput.message || "" }]
+    });
   }
   
-  // If single-agent workflow, we're done
-  if (!isMultiAgent) {
-    // Ensure we yield a done event if we didn't already
-    if (!agent1FinalOutput) {
-      const finalOutput = agent1Result.finalOutput;
-      if (finalOutput) {
-        yield {
-          type: "done",
-          message: typeof finalOutput === 'string' ? finalOutput : finalOutput.message || "",
-          output: finalOutput,
-          files: undefined,
-          containerId: undefined
-        };
+  // Check if approval is needed before continuing to next agent
+  // If there's a second agent (agent1/myagent2), we need approval before continuing
+  const needsApproval = isMultiAgent && hasAgent3; // hasAgent3 means there's a second agent (agent1/myagent2)
+  
+  if (needsApproval || !isMultiAgent) {
+    // Request approval before continuing
+    const approvalMessage = "hi.. do you wnat o proceed?"; // From workflow-paste.ts
+    
+    // Generate a unique approval ID
+    const approvalId = `approval_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Send approval request event
+    yield {
+      type: "approval_request",
+      message: approvalMessage,
+      approvalId: approvalId
+    };
+    
+    // Wait for approval response (poll every 500ms, max 60 seconds)
+    let approved: boolean | null = null;
+    const maxWaitTime = 60000; // 60 seconds
+    const pollInterval = 500; // 500ms
+    const startTime = Date.now();
+    
+    console.log('[Workflow] Waiting for user approval...');
+    
+    while (approved === null && (Date.now() - startTime) < maxWaitTime) {
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      
+      try {
+        // Import and use the checkApproval function directly
+        const { checkApproval } = await import('@/lib/approval-store');
+        const approvalResult = checkApproval(approvalId);
+        if (approvalResult !== null) {
+          approved = approvalResult;
+          console.log('[Workflow] Approval received:', approved);
+        }
+      } catch (error) {
+        console.error('[Workflow] Error checking approval:', error);
       }
     }
-    return;
+    
+    if (approved === null) {
+      // Timeout - default to reject
+      approved = false;
+      console.log('[Workflow] Approval timeout, defaulting to reject');
+    }
+    
+    // Continue workflow based on approval
+    if (!approved) {
+      // Rejected - stop workflow
+      console.log('[Workflow] Approval rejected, stopping...');
+      yield {
+        type: "done",
+        message: "Workflow stopped by user.",
+        output: null,
+        files: undefined,
+        containerId: undefined
+      };
+      return;
+    }
+    
+    // Approved - continue with workflow
+    console.log('[Workflow] Approval granted, continuing...');
+    
+    // If single-agent workflow, we're done after approval
+    if (!isMultiAgent) {
+      // Ensure we yield a done event if we didn't already
+      if (!agent1FinalOutput) {
+        const finalOutput = agent1Result.finalOutput;
+        if (finalOutput) {
+          yield {
+            type: "done",
+            message: typeof finalOutput === 'string' ? finalOutput : finalOutput.message || "",
+            output: finalOutput,
+            files: undefined,
+            containerId: undefined
+          };
+        }
+      }
+      return;
+    }
   }
   
-  // Multi-agent workflow continues...
+  // Multi-agent workflow continues after approval...
   
   // Send message_complete event to signal Agent 1's message is done
   // This tells the frontend to finalize the current message and prepare for a new one
@@ -124,10 +196,11 @@ export async function* createMultiAgentStream(workflow: WorkflowInput): AsyncGen
     }
   }
   
-  // Step 3: Stream Agent 3 (agent1) - output appears in chat (if exists)
+  // Step 3: Stream Agent 3 (agent1/myagent2) - output appears in chat (if exists)
   if (hasAgent3) {
     console.log('[Stream] Starting Agent 3 (agent1)');
     const agent3 = (workflowModule as any).agent1;
+    // runner.run() with { stream: true } returns a Promise that resolves to an async iterable
     const agent3Stream = await runner.run(agent3, conversationHistory, { stream: true });
 
     // Stream Agent 3's output - yield all events including final done
@@ -144,13 +217,20 @@ export async function* createMultiAgentStream(workflow: WorkflowInput): AsyncGen
     }
     
     // Ensure we yield a done event if adaptAgentStream didn't
-    const agent3Result = agent3Stream as any;
-    const finalOutput = agent3Result.finalOutput || agent3FinalOutput;
-    if (finalOutput && !agent3FinalOutput) {
+    // When streaming, we can't access finalOutput directly from the stream
+    // We rely on the output collected from stream events (agent3FinalOutput)
+    if (agent3FinalOutput) {
+      // Update conversation history with agent3's response
+      conversationHistory.push({
+        role: "assistant",
+        content: [{ type: "output_text", text: typeof agent3FinalOutput === 'string' ? agent3FinalOutput : agent3FinalOutput.message || "" }]
+      });
+    } else {
+      // If no final output was collected, yield a done event with empty message
       yield {
         type: "done",
-        message: finalOutput.message || "",
-        output: finalOutput,
+        message: "",
+        output: null,
         files: undefined,
         containerId: undefined
       };

@@ -49,4 +49,5 @@ export type StreamEvent =
   | { type: 'text'; content: string }
   | { type: 'message_complete'; message: string }
   | { type: 'done'; message: string; output?: any; files?: FileInfo[]; containerId?: string }
+  | { type: 'approval_request'; message: string; approvalId: string }
   | { type: 'error'; message: string };

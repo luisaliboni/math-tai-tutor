@@ -176,3 +176,6 @@ vercel --prod
 ## License
 
 MIT
+
+---
+🦊 *Maintained with help from Alfredo, Luisa's AI assistant*
